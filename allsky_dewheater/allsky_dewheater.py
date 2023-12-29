@@ -9,29 +9,37 @@ v1.0.1 by Damian Grocholski (Mr-Groch)
 - Added extra pin that is triggered with heater pin
 - Fixed dhtxxdelay (was not implemented)
 - Fixed max heater time (was not implemented)
-
+V1.0.2 by Alex Greenland
+- Updated code for pi 5
+V1.0.3 by Alex Greenland
+- Add AHTx0 i2c sensor
+V1.0.4 by Andreas Schminder 
+- Added Solo Cloudwatcher
 '''
 import allsky_shared as s
 import time
+import sys
+import json
+import urllib.request
+import board
 import adafruit_sht31d
 import adafruit_dht
+import adafruit_ahtx0
 from adafruit_bme280 import basic as adafruit_bme280
 from adafruit_htu21d import HTU21D
-import board
-import busio
-import RPi.GPIO as GPIO
 from meteocalc import heat_index
 from meteocalc import dew_point
-
+from digitalio import DigitalInOut, Direction, Pull
+    
 metaData = {
     "name": "Sky Dew Heater Control",
     "description": "Controls a dew heater via a temperature and humidity sensor",
     "module": "allsky_dewheater",
-    "version": "v1.0.1",
+    "version": "v1.0.4",
     "events": [
         "periodic"
     ],
-    "experimental": "true",
+    "experimental": "false",
     "arguments":{
         "type": "None",
         "inputpin": "",
@@ -48,7 +56,8 @@ metaData = {
         "dhtxxretrycount": "2",
         "dhtxxdelay" : "500",
         "extradatafilename": "allskydew.json",
-        "sht31heater": "False"
+        "sht31heater": "False",
+        "solourl": ""
     },
     "argumentdetails": {
         "type" : {
@@ -58,7 +67,7 @@ metaData = {
             "tab": "Sensor",
             "type": {
                 "fieldtype": "select",
-                "values": "None,SHT31,DHT22,DHT11,AM2302,BME280-I2C,HTU21",
+                "values": "None,SHT31,DHT22,DHT11,AM2302,BME280-I2C,HTU21,AHTx0,SOLO-Cloudwatcher",
                 "default": "None"
             }
         },
@@ -210,7 +219,54 @@ metaData = {
             "type": {
                 "fieldtype": "checkbox"
             }
-        }
+        },
+        "solourl": {
+            "required": "false",
+            "description": "URL from solo",
+            "help": "Read weather data from lunaticoastro.com 'Solo Cloudwatcher'",
+            "tab": "Solo"
+        }        
+    },
+    "changelog": {
+        "v1.0.0" : [
+            {
+                "author": "Alex Greenland",
+                "authorurl": "https://github.com/allskyteam",
+                "change": "Initial Release"
+            }
+        ],
+        "v1.0.1" : [
+            {
+                "author": "Damian Grocholski (Mr-Groch)",
+                "authorurl": "https://github.com/Mr-Groch",
+                "changes": [
+                    "Added extra pin that is triggered with heater pin",
+                    "Fixed dhtxxdelay (was not implemented)",
+                    "Fixed max heater time (was not implemented)"
+                ]
+            }
+        ],
+        "v1.0.2" : [
+            {
+                "author": "Alex Greenland",
+                "authorurl": "https://github.com/allskyteam",
+                "change": "Initial Release"
+            }
+        ],
+        "v1.0.3" : [
+            {
+                "author": "Alex Greenland",
+                "authorurl": "https://github.com/allskyteam",
+                "change": "Add AHTx0 i2c sensor"
+            }
+        ],
+        "v1.0.4" : [
+            {
+                "author": "Andreas Schminder",
+                "authorurl": "https://github.com/Adler6907",
+                "change": "Added Solo Cloudwatcher"
+            }
+        ]                                
     }
 }
 
@@ -223,8 +279,9 @@ def readSHT31(sht31heater):
         sensor.heater = sht31heater
         temperature = sensor.temperature
         humidity = sensor.relative_humidity
-    except:
-        pass
+    except RuntimeError as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(4, f"ERROR: Module readSHT31 failed on line {eTraceback.tb_lineno} - {e}")
 
     return temperature, humidity
 
@@ -238,10 +295,12 @@ def doDHTXXRead(inputpin):
         try:
             temperature = dhtDevice.temperature
             humidity = dhtDevice.humidity
-        except RuntimeError as error:
-            s.log(4, "INFO: {}".format(error))
-    except Exception as error:
-        s.log(4, "INFO: {}".format(error))
+        except RuntimeError as e:
+            eType, eObject, eTraceback = sys.exc_info()
+            s.log(4, f"ERROR: Module doDHTXXRead failed on line {eTraceback.tb_lineno} - {e}")
+    except Exception as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(4, f"ERROR: Module doDHTXXRead failed on line {eTraceback.tb_lineno} - {e}")
 
     return temperature, humidity
 
@@ -276,9 +335,9 @@ def readBme280I2C(i2caddress):
     if i2caddress != "":
         try:
             i2caddressInt = int(i2caddress, 16)
-        except:
-            result = "Address {} is not a valid i2c address".format(i2caddress)
-            s.log(0,"ERROR: {}".format(result))
+        except Exception as e:
+            eType, eObject, eTraceback = sys.exc_info()
+            s.log(0, f"ERROR: Module readBme280I2C failed on line {eTraceback.tb_lineno} - {e}")
 
     try:
         i2c = board.I2C()
@@ -292,8 +351,9 @@ def readBme280I2C(i2caddress):
         relHumidity = bme280.relative_humidity
         altitude = bme280.altitude
         pressure = bme280.pressure
-    except ValueError:
-        pass
+    except ValueError as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(0, f"ERROR: Module readBme280I2C failed on line {eTraceback.tb_lineno} - {e}")
 
     return temperature, humidity, pressure, relHumidity, altitude
 
@@ -317,51 +377,121 @@ def readHtu21(i2caddress):
 
         temperature =  htu21.temperature
         humidity = htu21.relative_humidity
-    except ValueError:
-        pass
+    except ValueError as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(4, f"ERROR: Module readHtu21 failed on line {eTraceback.tb_lineno} - {e}")
+        
+    return temperature, humidity
+
+def readAHTX0(i2caddress):
+    temperature = None
+    humidity = None
+
+    if i2caddress != "":
+        try:
+            i2caddressInt = int(i2caddress, 16)
+        except:
+            result = "Address {} is not a valid i2c address".format(i2caddress)
+            s.log(0,"ERROR: {}".format(result))
+
+    try:
+        i2c = board.I2C()
+        sensor = adafruit_ahtx0.AHTx0(i2c)
+        temperature = sensor.temperature
+        humidity = sensor.relative_humidity
+    except ValueError as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(4, f"ERROR: Module readAHTX0 failed on line {eTraceback.tb_lineno} - {e}")
 
     return temperature, humidity
 
-def setmode():
-    try:
-        GPIO.setmode(GPIO.BOARD)
-    except:
-        pass
+def readSolo(url):
+    temperature = None
+    humidity = None
+    pressure = None
+    dewPoint = None
+    
+    try: 
+        #Read Weaterdata from SOLO Website
+        jsonData = urllib.request.urlopen(url).read()  
+        currentWeatherdata =  json.loads(jsonData)['LastReadings']
 
-def turnHeaterOn(heaterpin, invertrelay):
-    result = "Turning Heater on"
-    setmode()
-    GPIO.setup(heaterpin.id, GPIO.OUT)
-    if invertrelay:
-        if GPIO.input(heaterpin.id) == 0:
-            result = "Leaving Heater on"
-        GPIO.output(heaterpin.id, GPIO.LOW)
+        # that is what you should receive
+        #    { "LastReadings": {
+        #    "dataGMTTime" : "2023/12/17 22:52:40",
+        #    "cwinfo" : "Serial: 2550, FW: 5.89",
+        #    "clouds" : -14.850000,
+        #    "cloudsSafe" : "Unsafe",
+        #    "temp" : 8.450000,
+        #    "wind" : 12,
+        #    "windSafe" : "Safe",
+        #    "gust" : 13,
+        #    "rain" : 3072,
+        #    "rainSafe" : "Safe",
+        #    "lightmpsas" : 20.31,
+        #    "lightSafe" : "Safe",
+        #    "switch" : 0,
+        #    "safe" : 0,
+        #    "hum" : 65,
+        #    "humSafe" : "Safe",
+        #    "dewp" : 2.250000,
+        #    "rawir" : -19.150000,
+        #    "abspress" : 1003.600000,
+        #    "relpress" : 1032.722598,
+        #    "pressureSafe" : "Safe"
+        #    }
+        #    }        
+            
+        temperature = float(currentWeatherdata['temp'])
+        humidity = float(currentWeatherdata['hum'])
+        pressure = float(currentWeatherdata['relpress'])
+        dewPoint = float(currentWeatherdata['dewp'])
+    except Exception as e:
+        eType, eObject, eTraceback = sys.exc_info()
+        s.log(4, f"ERROR: Module readSolo failed on line {eTraceback.tb_lineno} - {e}")
+            
+    return temperature, humidity, pressure, dewPoint
+
+def turnHeaterOn(heaterpin, invertrelay, extra=False):
+    if extra:
+        type = 'Extra'
     else:
-        if GPIO.input(heaterpin.id) == 1:
-            result = "Leaving Heater on"
-        GPIO.output(heaterpin.id, GPIO.HIGH)
+        type = 'Heater'
+        
+    result = f"Turning {type} on using pin {heaterpin}"
+    pin = DigitalInOut(heaterpin)
+    pin.switch_to_output()
+    
+    if invertrelay:
+        pin.value = 0
+    else:
+        pin.value = 1
+
     if not s.dbHasKey("dewheaterontime"):
         now = int(time.time())
         s.dbAdd("dewheaterontime", now)
-    s.log(1,"INFO: {}".format(result))
+    s.log(1,f"INFO: {result}")
 
-def turnHeaterOff(heaterpin, invertrelay):
-    result = "Turning Heater off"
-    setmode()
-    GPIO.setup(heaterpin.id, GPIO.OUT)
-    if invertrelay:
-        if GPIO.input(heaterpin.id) == 1:
-            result = "Leaving Heater off"
-        GPIO.output(heaterpin.id, GPIO.HIGH)
+def turnHeaterOff(heaterpin, invertrelay, extra=False):
+    if extra:
+        type = 'Extra'
     else:
-        if GPIO.input(heaterpin.id) == 0:
-            result = "Leaving Heater off"
-        GPIO.output(heaterpin.id, GPIO.LOW)
+        type = 'Heater'
+                    
+    result = f"Turning {type} off using pin {heaterpin}"
+    pin = DigitalInOut(heaterpin)
+    pin.direction = Direction.OUTPUT
+    
+    if invertrelay:
+        pin.value = 1
+    else:
+        pin.value = 0
+        
     if s.dbHasKey("dewheaterontime"):
         s.dbDeleteKey("dewheaterontime")
-    s.log(1,"INFO: {}".format(result))
+    s.log(1,f"INFO: {result}")
 
-def getSensorReading(sensorType, inputpin, i2caddress, dhtxxretrycount, dhtxxdelay, sht31heater):
+def getSensorReading(sensorType, inputpin, i2caddress, dhtxxretrycount, dhtxxdelay, sht31heater, soloURL):
     temperature = None
     humidity = None
     dewPoint = None
@@ -378,6 +508,10 @@ def getSensorReading(sensorType, inputpin, i2caddress, dhtxxretrycount, dhtxxdel
         temperature, humidity, pressure, relHumidity, altitude = readBme280I2C(i2caddress)
     elif sensorType == "HTU21":
         temperature, humidity = readHtu21(i2caddress)
+    elif sensorType == "AHTx0":
+        temperature, humidity = readAHTX0(i2caddress)
+    elif sensorType == "SOLO-Cloudwatcher":
+        temperature, humidity, pressure, dewPoint = readSolo(soloURL)         
     else:
         s.log(0,"ERROR: No sensor type defined")
 
@@ -409,8 +543,8 @@ def getLastRunTime():
 
 def debugOutput(sensorType, temperature, humidity, dewPoint, heatIndex, pressure, relHumidity, altitude):
     s.log(1,f"INFO: Sensor {sensorType} read. Temperature {temperature} Humidity {humidity} Relative Humidity {relHumidity} Dew Point {dewPoint} Heat Index {heatIndex} Pressure {pressure} Altitude {altitude}")
-
-def dewheater(params, event):
+    
+def dewheater(params, event):    
     result = ""
     sensorType = params["type"]
     heaterstartupstate = params["heaterstartupstate"]
@@ -438,6 +572,11 @@ def dewheater(params, event):
     extradatafilename = params['extradatafilename']
     sht31heater = params["sht31heater"]
 
+    try:
+        soloURL = params["solourl"]
+    except ValueError:
+        soloURL = ''
+                
     temperature = 0
     humidity = 0
     dewPoint = 0
@@ -446,7 +585,7 @@ def dewheater(params, event):
 
     shouldRun, diff = s.shouldRun('allskydew', frequency)
 
-    if shouldRun:
+    if shouldRun:                        
         try:
             heaterpin = int(heaterpin)
         except ValueError:
@@ -462,7 +601,7 @@ def dewheater(params, event):
                 lastRunSecs = now - lastRunTime
                 if lastRunSecs >= frequency:
                     s.dbUpdate("dewheaterlastrun", now)
-                    temperature, humidity, dewPoint, heatIndex, pressure, relHumidity, altitude = getSensorReading(sensorType, inputpin, i2caddress, dhtxxretrycount, dhtxxdelay, sht31heater)
+                    temperature, humidity, dewPoint, heatIndex, pressure, relHumidity, altitude = getSensorReading(sensorType, inputpin, i2caddress, dhtxxretrycount, dhtxxdelay, sht31heater, soloURL)
                     if temperature is not None:
                         lastOnSecs = 0
                         if s.dbHasKey("dewheaterontime"):
@@ -473,14 +612,14 @@ def dewheater(params, event):
                             s.log(1,"INFO: {}".format(result))
                             turnHeaterOff(heaterpin, invertrelay)
                             if extrapin != 0:
-                                turnHeaterOff(extrapin, invertextrapin)
+                                turnHeaterOff(extrapin, invertextrapin, True)
                             heater = 'Off'
                         elif force != 0 and temperature <= force:
                             result = "Temperature below forced level {}".format(force)
                             s.log(1,"INFO: {}".format(result))
                             turnHeaterOn(heaterpin, invertrelay)
                             if extrapin != 0:
-                                turnHeaterOn(extrapin, invertextrapin)
+                                turnHeaterOn(extrapin, invertextrapin, True)
                             heater = 'On'
                         else:
                             if ((temperature-limit) <= dewPoint):
@@ -495,9 +634,9 @@ def dewheater(params, event):
                                 s.log(1,"INFO: {}".format(result))
                                 turnHeaterOff(heaterpin, invertrelay)
                                 if extrapin != 0:
-                                    turnHeaterOff(extrapin, invertextrapin)
+                                    turnHeaterOff(extrapin, invertextrapin, True)
                                 heater = 'Off'
-
+                            
                         extraData = {}
                         extraData["AS_DEWCONTROLAMBIENT"] = str(temperature)
                         extraData["AS_DEWCONTROLDEW"] = str(dewPoint)
